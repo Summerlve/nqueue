@@ -292,7 +292,7 @@ class Blocked {
     }
 
     notifyBlocked() {
-        if(this._state === false) return;
+        if(this._state === false) return ;
         process.nextTick(_ => 
             this._ifBlockedFn(this.requestEnqueue.bind(this), this.giveUp.bind(this)));
     }
