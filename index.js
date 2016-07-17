@@ -54,7 +54,7 @@ class TaskQueue {
 
         if (this.isFull())
         {
-            return ;
+            return false;
         }
 
         const task = new Task(fn);
@@ -65,7 +65,7 @@ class TaskQueue {
             this._last = task;
             this._N ++;
             this._EnqueueListener.emit("enqueue");
-            return ;
+            return true;
         }
 
         this._last.next = task;
@@ -280,8 +280,8 @@ class MaybeBlocked {
         this._onceRequest = false;
         this._foreverRequest = false;
         this._isBlocked = isBlocked;
-        this._interval = 0;
 
+        // listening to dequeue event
         this._listener.on("dequeue", _ => this.notifyDequeue());
     }
 
@@ -299,9 +299,7 @@ class MaybeBlocked {
         return this;
     }
 
-    requestEnqueue(option, interval) {
-        this._interval = interval;
-
+    requestEnqueue(option) {
         if (option === "once")
         {
             this._onceRequest = true;
@@ -317,7 +315,7 @@ class MaybeBlocked {
         this._queue._blockedSet.delete(this);
     }
 
-    succeed(cb) {
+    enqueueSucceed(cb) {
         this._enqueueSucceedCb = cb;
         if (!this.isBlocked()) 
         {
@@ -328,7 +326,7 @@ class MaybeBlocked {
         return this;
     }
 
-    failed(cb) {
+    enqueueFailed(cb) {
         this._enqueueFailedCb = cb;
         return this;
     }
@@ -336,9 +334,8 @@ class MaybeBlocked {
     notifyDequeue() {
         if (this._onceRequest === true)
         {
-           setTimeout(_ => {
+           process.nextTick(_ => {
                 const result = this._queue.enqueueOnce(this._fn);
-                this._queue._blockedListenerSet.delete(this.listener);
 
                 if (result === true) 
                 {
@@ -348,23 +345,23 @@ class MaybeBlocked {
                 {
                     this._enqueueFailedCb();
                 }
-            }, this._interval);
+            });
         }
         else if (this._foreverRequest === true)
         {
-             setTimeout(_ => {
+             process.nextTick(_ => {
                 const result = this._queue.enqueue(this._fn);
 
                 if (result === true) 
                 {
-                    this._queue._blockedListenerSet.delete(this.listener);
                     this._enqueueSucceedCb();
                 }
                 else
                 {
+                    this._queue._blockedListenerCollection.push(this._listener);
                     this._enqueueFailedCb();
                 }
-             }, this._interval);
+             });
         }
     }
 
@@ -374,14 +371,14 @@ class BlockedFixedQueue extends FixedQueue {
 
     constructor(fixedSize) {
         super(fixedSize);
-        this._blockedListenerSet = new Set();
+        this._blockedListenerCollection = [];
     }
 
     enqueueBlocked(fn) {
         if (this.isFull())
         {
             const blocked = new MaybeBlocked(this, fn, true);
-            this._blockedListenerSet.add(blocked.listener);
+            this._blockedListenerCollection.push(blocked.listener);
 
             return blocked;
         }
@@ -393,7 +390,8 @@ class BlockedFixedQueue extends FixedQueue {
     }
 
     dequeue() {
-        this._blockedListenerSet.forEach(_ => _.emit("dequeue"));
+        const blockedListener = this._blockedListenerCollection.shift();
+        if (blockedListener) blockedListener.emit("dequeue");
         return super.dequeue();
     }
 
