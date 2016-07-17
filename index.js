@@ -268,56 +268,79 @@ class FixedQueue extends TaskQueue {
 
 }
 
-class Blocked {
+class MaybeBlocked {
 
-    constructor(queue, fn, state) {
+    constructor(queue, fn, isBlocked) {
         this._queue = queue;
         this._fn = fn;
         this._ifBlockedCb = null;
-        this._resultCb = null;
+        this._enqueueSucceedCb = null;
+        this._enqueueFailedCb = null;
         this._onceRequest = false;
         this._foreverRequest = false;
-        this._state = state;
+        this._isBlocked = isBlocked;
+        this._interval = 0;
+    }
+
+    isBlocked() {
+        return this._isBlocked === true;
     }
 
     ifBlocked(ifBlockedCb) {
         this._ifBlockedCb = ifBlockedCb;
+        if (this.isBlocked) process.nextTick(_ => this._ifBlockedCb(this.requestEnqueue.bind(this), this.giveUp.bind(this)));
         return this;
     }
 
-    result(resultCb) {
-        this._resultCb = resultCb;
-        if (this._state === false) process.nextTick(_ => this._resultCb());
+    succeed(cb) {
+        this._enqueueSucceedCb = cb;
+        if (!this.isBlocked()) 
+        {
+           new Promise((resolve, reject) => {
+               this._enqueueSucceedCb();
+               resolve();
+           })
+        }
         return this;
     }
 
-    notifyBlocked() {
-        if(this._state === false) return ;
-        process.nextTick(_ => 
-            this._ifBlockedFn(this.requestEnqueue.bind(this), this.giveUp.bind(this)));
+    failed(cb) {
+        this._enqueueFailedCb = cb;
+        if (!this.isBlocked()) 
+        {
+           new Promise((resolve, reject) => {
+               this._enqueueFailedCb();
+               resolve();
+           })
+        }
+        return this;
     }
 
-    NotifyDequeue() {
+    notifyDequeue() {
         if (this._onceRequest === true)
         {
-            process.nextTick(_ => {
+            new Promise((resolve, reject) => {
                 const result = this._queue.enqueueOnce(this._fn);
                 this._queue._blockedSet.delete(this);
-
-                process.nextTick(_ => this._resultCb(result));
+                this._resultCb(result);
+                resolve(result);
             });
         }
         else if (this._foreverRequest === true)
         {
-             process.nextTick(_ => {
+             let exec = new Promise((resolve, reject) => {
                 const result = this._queue.enqueue(this._fn);
                 if (result === true) this._queue._blockedSet.delete(this);
-                process.nextTick(_ => this._resultCb(result));
-            });
+                resolve(result);
+             });
+
+             exec.then(result => {
+                this._resultCb(result)
+             });
         }
     }
 
-    requestEnqueue(option) {
+    requestEnqueue(option, interval) {
         if (option === "once")
         {
             this._onceRequest = true;
@@ -342,28 +365,26 @@ class BlockedFixedQueue extends FixedQueue {
         this._blockedListener = new EventEmitter();
         this._blockedSet = new Set();
 
-        this._blockedListener.on("blocked", _ => {
-            this._blockedSet.forEach(_ => _.notifyBlocked());
-        });
-
         this._blockedListener.on("dequeue", _ => {
-            this._blockedSet.forEach(_ => _.notifyDequeue());
+            this._blockedSet.forEach(_ => new Promise((resolve, reject) => {
+                _.notifyDequeue();
+                resolve();
+            }));
         });
     }
 
     enqueueBlocked(fn) {
         if (this.isFull())
         {
-            const blocked = new Blocked(this, fn, true);
+            const blocked = new MaybeBlocked(this, fn, true);
             this._blockedSet.add(blocked);
 
-            this._blockedListener.emit("blocked");
             return blocked;
         }
         else
         {
             super.enqueue(fn);
-            return new Blocked(null, null, false);
+            return new MaybeBlocked(null, null, false);
         }
     }
 

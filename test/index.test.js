@@ -24,15 +24,17 @@ const {WaitedFixedQueue, TaskQueue, FixedQueue, BlockedFixedQueue} = require("..
 //     console.log(queue._curRunningTask);
 // }, 4000);
 
-const blockedFixedQueue = new BlockedFixedQueue(10);
-for (let j = 0; j < 10; j++) {
+const blockedFixedQueue = new BlockedFixedQueue(100);
+for (let j = 0; j < 100; j++) {
     blockedFixedQueue.enqueueBlocked(signal => {
         console.log("queue", j);
         signal();
     }).ifBlocked((requestEnqueue, giveUp) => {
-        requestEnqueue("once");
-    }).result(result => {
-        console.log(result);
+        requestEnqueue("forever");
+    }).succeed(_ => {
+        console.log("enqueue succeed");
+    }).failed(_ => {
+        console.log("enqueue failed");
     });
 }
 
