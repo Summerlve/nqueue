@@ -273,6 +273,7 @@ class MaybeBlocked {
     constructor(queue, fn, isBlocked) {
         this._queue = queue;
         this._fn = fn;
+        this._listener = new EventEmitter();
         this._ifBlockedCb = null;
         this._enqueueSucceedCb = null;
         this._enqueueFailedCb = null;
@@ -280,6 +281,12 @@ class MaybeBlocked {
         this._foreverRequest = false;
         this._isBlocked = isBlocked;
         this._interval = 0;
+
+        this._listener.on("dequeue", _ => this.notifyDequeue());
+    }
+
+    get listener() {
+        return this._listener;
     }
 
     isBlocked() {
@@ -288,59 +295,13 @@ class MaybeBlocked {
 
     ifBlocked(ifBlockedCb) {
         this._ifBlockedCb = ifBlockedCb;
-        if (this.isBlocked) process.nextTick(_ => this._ifBlockedCb(this.requestEnqueue.bind(this), this.giveUp.bind(this)));
+        if (this.isBlocked()) process.nextTick(_ => this._ifBlockedCb(this.requestEnqueue.bind(this), this.giveUp.bind(this)));
         return this;
-    }
-
-    succeed(cb) {
-        this._enqueueSucceedCb = cb;
-        if (!this.isBlocked()) 
-        {
-           new Promise((resolve, reject) => {
-               this._enqueueSucceedCb();
-               resolve();
-           })
-        }
-        return this;
-    }
-
-    failed(cb) {
-        this._enqueueFailedCb = cb;
-        if (!this.isBlocked()) 
-        {
-           new Promise((resolve, reject) => {
-               this._enqueueFailedCb();
-               resolve();
-           })
-        }
-        return this;
-    }
-
-    notifyDequeue() {
-        if (this._onceRequest === true)
-        {
-            new Promise((resolve, reject) => {
-                const result = this._queue.enqueueOnce(this._fn);
-                this._queue._blockedSet.delete(this);
-                this._resultCb(result);
-                resolve(result);
-            });
-        }
-        else if (this._foreverRequest === true)
-        {
-             let exec = new Promise((resolve, reject) => {
-                const result = this._queue.enqueue(this._fn);
-                if (result === true) this._queue._blockedSet.delete(this);
-                resolve(result);
-             });
-
-             exec.then(result => {
-                this._resultCb(result)
-             });
-        }
     }
 
     requestEnqueue(option, interval) {
+        this._interval = interval;
+
         if (option === "once")
         {
             this._onceRequest = true;
@@ -356,28 +317,71 @@ class MaybeBlocked {
         this._queue._blockedSet.delete(this);
     }
 
+    succeed(cb) {
+        this._enqueueSucceedCb = cb;
+        if (!this.isBlocked()) 
+        {
+           process.nextTick(_ => { 
+               this._enqueueSucceedCb();
+           });
+        }
+        return this;
+    }
+
+    failed(cb) {
+        this._enqueueFailedCb = cb;
+        return this;
+    }
+
+    notifyDequeue() {
+        if (this._onceRequest === true)
+        {
+           setTimeout(_ => {
+                const result = this._queue.enqueueOnce(this._fn);
+                this._queue._blockedListenerSet.delete(this.listener);
+
+                if (result === true) 
+                {
+                    this._enqueueSucceedCb();
+                }
+                else 
+                {
+                    this._enqueueFailedCb();
+                }
+            }, this._interval);
+        }
+        else if (this._foreverRequest === true)
+        {
+             setTimeout(_ => {
+                const result = this._queue.enqueue(this._fn);
+
+                if (result === true) 
+                {
+                    this._queue._blockedListenerSet.delete(this.listener);
+                    this._enqueueSucceedCb();
+                }
+                else
+                {
+                    this._enqueueFailedCb();
+                }
+             }, this._interval);
+        }
+    }
+
 }
 
 class BlockedFixedQueue extends FixedQueue {
 
     constructor(fixedSize) {
         super(fixedSize);
-        this._blockedListener = new EventEmitter();
-        this._blockedSet = new Set();
-
-        this._blockedListener.on("dequeue", _ => {
-            this._blockedSet.forEach(_ => new Promise((resolve, reject) => {
-                _.notifyDequeue();
-                resolve();
-            }));
-        });
+        this._blockedListenerSet = new Set();
     }
 
     enqueueBlocked(fn) {
         if (this.isFull())
         {
             const blocked = new MaybeBlocked(this, fn, true);
-            this._blockedSet.add(blocked);
+            this._blockedListenerSet.add(blocked.listener);
 
             return blocked;
         }
@@ -389,7 +393,7 @@ class BlockedFixedQueue extends FixedQueue {
     }
 
     dequeue() {
-        this._blockedListener.emit("dequeue");
+        this._blockedListenerSet.forEach(_ => _.emit("dequeue"));
         return super.dequeue();
     }
 

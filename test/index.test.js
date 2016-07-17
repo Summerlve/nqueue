@@ -25,12 +25,12 @@ const {WaitedFixedQueue, TaskQueue, FixedQueue, BlockedFixedQueue} = require("..
 // }, 4000);
 
 const blockedFixedQueue = new BlockedFixedQueue(100);
-for (let j = 0; j < 100; j++) {
+for (let j = 0; j < 200; j++) {
     blockedFixedQueue.enqueueBlocked(signal => {
-        console.log("queue", j);
+        console.log("queue", j, "queue size:", blockedFixedQueue.size());
         signal();
     }).ifBlocked((requestEnqueue, giveUp) => {
-        requestEnqueue("forever");
+        requestEnqueue("forever", 3000);
     }).succeed(_ => {
         console.log("enqueue succeed");
     }).failed(_ => {
