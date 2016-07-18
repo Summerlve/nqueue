@@ -266,11 +266,11 @@ class MaybeBlockedTask {
         this._giveUpRequest = false;
         this._isBlocked = isBlocked;
 
-        // listening to dequeue event
-        this._listener.on("dequeue", _ => this.notifyDequeue());
+        // listening to dequeue event if blocked
+        if (this.isBlocked()) this._listener.on("dequeue", _ => this.notifyDequeue());
     }
 
-    get listener() {
+    listener() {
         return this._listener;
     }
 
@@ -283,19 +283,29 @@ class MaybeBlockedTask {
     }
 
     ifBlocked(ifBlockedCb) {
+        this._ifBlockedCb = ifBlockedCb;
+
+        // if not blocked, return this direct
         if (!this.isBlocked()) return this;
 
-        this._ifBlockedCb = ifBlockedCb;
-        process.nextTick(_ => {
+        // keep in mind, this func must only called once time
+        if (this.isIfBlockedCbExeced()) return this;
+
+        this.execIfBlockedCb();
+        return this;
+    }
+
+    execIfBlockedCb() {
+        return process.nextTick(_ => {
             this._ifBlockedCbExeced = true;
             this._ifBlockedCb(this.requestEnqueue.bind(this), this.giveUp.bind(this));
         });
-        return this;
     }
 
     requestEnqueue(option) {
         if (option === "once")
         {
+            console.log("request once");
             this._onceRequest = true;
         }
         else if (option === "forever")
@@ -325,22 +335,28 @@ class MaybeBlockedTask {
     }
 
     notifyDequeue() {
-        if (this._giveUpRequest === true) return ;
+        console.log("notifyed");
+        
+        if (this._giveUpRequest === true)
+        {
+            return process.nextTick(_ => {
+                this._enqueueFailedCb();
+            });
+        }
 
         if (!this.isIfBlockedCbExeced()) 
         {
-            process.nextTick(_ => {
-                this._ifBlockedCb(this.requestEnqueue.bind(this), this.giveUp.bind(this));
-                
-                process.nextTick(_ => {
-                    this.notifyDequeue();
-                });
+            this.execIfBlockedCb();
+
+            return process.nextTick(_ => {
+                this.notifyDequeue();
             });
         }
 
         if (this._onceRequest === true)
         {
-           process.nextTick(_ => {
+            console.log("once");
+            process.nextTick(_ => {
                 const result = this._queue.enqueueOnce(this._fn);
 
                 if (result === true) 
@@ -386,14 +402,16 @@ class BlockedFixedQueue extends FixedQueue {
         if (this.isFull())
         {
             const blocked = new MaybeBlockedTask(this, fn, true);
-            this._blockedListenerCollection.push(blocked.listener);
+            this._blockedListenerCollection.push(blocked.listener());
 
             return blocked;
         }
         else
         {
             super.enqueue(fn);
-            return new MaybeBlockedTask(this, fn, false);
+            const nonblocked = new MaybeBlockedTask(this, fn, false);
+            this._blockedListenerCollection.push(nonblocked.listener());
+            return nonblocked
         }
     }
 
