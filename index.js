@@ -47,15 +47,7 @@ class TaskQueue {
     }
 
     enqueue(fn) {
-        if (typeof fn !== "function")
-        {
-            throw new TypeError("arg must be a function");
-        }
-
-        if (this.isFull())
-        {
-            return false;
-        }
+        this.needFn(fn);
 
         const task = new Task(fn);
 
@@ -72,6 +64,7 @@ class TaskQueue {
         this._last = task;
         this._N ++;
         this._EnqueueListener.emit("enqueue");
+        return true;
     }
 
     dequeue() {
@@ -148,6 +141,39 @@ class TaskQueue {
         return this._N;
     }
 
+    needFn(fn) {
+        if (typeof fn !== "function")
+        {
+            throw new TypeError("arg must be a function");
+        }
+    }
+
+}
+
+class FixedQueue extends TaskQueue {
+
+    constructor(fixedSize) {
+        super();
+        this._fixedSize = fixedSize;
+    }
+
+    enqueue(fn) {
+        this.needFn(fn);
+
+        if (this.isFull())
+        {
+            return false;
+        }
+        else
+        {
+            return super.enqueue(fn);
+        }
+    }
+
+    isFull() {
+        return this._N === this._fixedSize;
+    }
+
 }
 
 class WaitArea extends Array {
@@ -167,40 +193,23 @@ class WaitArea extends Array {
 
 }
 
-class WaitedFixedQueue extends TaskQueue{
+class WaitedFixedQueue extends FixedQueue{
 
     constructor(fixedSize) {
-        super();
-        this._fixedSize = fixedSize;
+        super(fixedSize);
         this._waitArea = new WaitArea();
     }
 
     enqueue(fn) {
-        if (typeof fn !== "function")
-        {
-            throw new TypeError("arg must be a function");
-        }
+        this.needFn(fn);
 
         if (this.isFull())
         {
-            return this._waitArea.push(fn);
+            this._waitArea.push(fn);
+            return false;
         }
 
-        const task = new Task(fn);
-
-        if (this.isEmpty())
-        {
-            this._first = task;
-            this._last = task;
-            this._N ++;
-            this._EnqueueListener.emit("enqueue");
-            return ;
-        }
-
-        this._last.next = task;
-        this._last = task;
-        this._N ++;
-        this._EnqueueListener.emit("enqueue");
+        return super.enqueue(fn);
     }
 
     dequeue() {
@@ -242,43 +251,19 @@ class WaitedFixedQueue extends TaskQueue{
 
 }
 
-
-class FixedQueue extends TaskQueue {
-
-    constructor(fixedSize) {
-        super();
-        this._fixedSize = fixedSize;
-    }
-
-    enqueue(fn) {
-        if (this.isFull())
-        {
-            return false;
-        }
-        else
-        {
-            super.enqueue(fn);
-            return true;
-        }
-    }
-
-    isFull() {
-        return this._N === this._fixedSize;
-    }
-
-}
-
-class MaybeBlocked {
+class MaybeBlockedTask {
 
     constructor(queue, fn, isBlocked) {
         this._queue = queue;
         this._fn = fn;
         this._listener = new EventEmitter();
         this._ifBlockedCb = null;
+        this._ifBlockedCbExeced = false;
         this._enqueueSucceedCb = null;
         this._enqueueFailedCb = null;
         this._onceRequest = false;
         this._foreverRequest = false;
+        this._giveUpRequest = false;
         this._isBlocked = isBlocked;
 
         // listening to dequeue event
@@ -293,9 +278,18 @@ class MaybeBlocked {
         return this._isBlocked === true;
     }
 
+    isIfBlockedCbExeced() {
+        return this._ifBlockedCbExeced === true;
+    }
+
     ifBlocked(ifBlockedCb) {
+        if (!this.isBlocked()) return this;
+
         this._ifBlockedCb = ifBlockedCb;
-        if (this.isBlocked()) process.nextTick(_ => this._ifBlockedCb(this.requestEnqueue.bind(this), this.giveUp.bind(this)));
+        process.nextTick(_ => {
+            this._ifBlockedCbExeced = true;
+            this._ifBlockedCb(this.requestEnqueue.bind(this), this.giveUp.bind(this));
+        });
         return this;
     }
 
@@ -303,7 +297,6 @@ class MaybeBlocked {
         if (option === "once")
         {
             this._onceRequest = true;
-            
         }
         else if (option === "forever")
         {
@@ -312,7 +305,7 @@ class MaybeBlocked {
     }
 
     giveUp() {
-        this._queue._blockedSet.delete(this);
+        this._giveUpRequest = true;
     }
 
     enqueueSucceed(cb) {
@@ -332,6 +325,19 @@ class MaybeBlocked {
     }
 
     notifyDequeue() {
+        if (this._giveUpRequest === true) return ;
+
+        if (!this.isIfBlockedCbExeced()) 
+        {
+            process.nextTick(_ => {
+                this._ifBlockedCb(this.requestEnqueue.bind(this), this.giveUp.bind(this));
+                
+                process.nextTick(_ => {
+                    this.notifyDequeue();
+                });
+            });
+        }
+
         if (this._onceRequest === true)
         {
            process.nextTick(_ => {
@@ -375,9 +381,11 @@ class BlockedFixedQueue extends FixedQueue {
     }
 
     enqueueBlocked(fn) {
+        this.needFn(fn);
+
         if (this.isFull())
         {
-            const blocked = new MaybeBlocked(this, fn, true);
+            const blocked = new MaybeBlockedTask(this, fn, true);
             this._blockedListenerCollection.push(blocked.listener);
 
             return blocked;
@@ -385,18 +393,18 @@ class BlockedFixedQueue extends FixedQueue {
         else
         {
             super.enqueue(fn);
-            return new MaybeBlocked(null, null, false);
+            return new MaybeBlockedTask(this, fn, false);
         }
+    }
+
+    enqueueOnce(fn) {
+        return super.enqueue(fn);
     }
 
     dequeue() {
         const blockedListener = this._blockedListenerCollection.shift();
         if (blockedListener) blockedListener.emit("dequeue");
         return super.dequeue();
-    }
-
-    enqueueOnce(fn) {
-        return super.enqueue(fn);
     }
 
 }
